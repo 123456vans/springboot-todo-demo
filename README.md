@@ -98,7 +98,8 @@ CREATE TABLE IF NOT EXISTS todo_log (
 确保已安装 Docker Desktop。先通过环境变量提供数据库密码，然后在项目根目录启动容器。
 
 ```bash
-$env:MYSQL_PASSWORD = "<your-password>"
+# Git Bash
+export MYSQL_PASSWORD="<your-password>"
 docker compose up -d
 docker compose ps
 ```
