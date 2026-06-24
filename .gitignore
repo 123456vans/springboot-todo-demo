@@ -1,0 +1,15 @@
+target/
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.classpath
+.project
+.settings/
+*.log
+logs/
+out/
+.DS_Store
+Thumbs.db
+hs_err_pid*

@@ -1,0 +1,36 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: springboot-todo-demo
+  datasource:
+    url: jdbc:mysql://localhost:3306/todo_demo?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: ${MYSQL_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      database: 0
+      timeout: 3s
+  sql:
+    init:
+      mode: always
+      encoding: UTF-8
+
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.example.todo.entity
+  configuration:
+    map-underscore-to-camel-case: true
+
+rocketmq:
+  name-server: localhost:9876
+  producer:
+    group: todo-producer-group
+
+logging:
+  level:
+    com.example.todo.mapper: debug
