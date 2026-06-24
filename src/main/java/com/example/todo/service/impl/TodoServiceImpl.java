@@ -5,18 +5,14 @@ import com.example.todo.entity.Todo;
 import com.example.todo.entity.TodoLog;
 import com.example.todo.mapper.TodoLogMapper;
 import com.example.todo.mapper.TodoMapper;
+import com.example.todo.mq.TodoMessageProducer;
 import com.example.todo.service.TodoService;
-import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
@@ -26,7 +22,6 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class TodoServiceImpl implements TodoService {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(TodoServiceImpl.class);
     private static final int TODO_UNFINISHED = 0;
     private static final int TODO_FINISHED = 1;
     private static final int RECENT_OPERATION_LIMIT = 20;
@@ -35,18 +30,18 @@ public class TodoServiceImpl implements TodoService {
     private final TodoLogMapper todoLogMapper;
     private final StringRedisTemplate redisTemplate;
     private final RedissonClient redissonClient;
-    private final RocketMQTemplate rocketMQTemplate;
+    private final TodoMessageProducer todoMessageProducer;
 
     public TodoServiceImpl(TodoMapper todoMapper,
                            TodoLogMapper todoLogMapper,
                            StringRedisTemplate redisTemplate,
                            RedissonClient redissonClient,
-                           RocketMQTemplate rocketMQTemplate) {
+                           TodoMessageProducer todoMessageProducer) {
         this.todoMapper = todoMapper;
         this.todoLogMapper = todoLogMapper;
         this.redisTemplate = redisTemplate;
         this.redissonClient = redissonClient;
-        this.rocketMQTemplate = rocketMQTemplate;
+        this.todoMessageProducer = todoMessageProducer;
     }
 
     @Override
@@ -56,14 +51,12 @@ public class TodoServiceImpl implements TodoService {
         String lockKey = "lock:todo:" + userId + ":" + title;
         RLock lock = redissonClient.getLock(lockKey);
         boolean locked = false;
-        boolean unlockRegistered = false;
 
         try {
-            locked = lock.tryLock(3, 30, TimeUnit.SECONDS);
+            locked = lock.tryLock(3, 10, TimeUnit.SECONDS);
             if (!locked) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "请勿重复提交同名任务");
             }
-            unlockRegistered = registerUnlockAfterTransaction(lock);
 
             if (todoMapper.countByUserIdAndTitle(userId, title) > 0) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "同名任务已存在");
@@ -78,18 +71,16 @@ public class TodoServiceImpl implements TodoService {
             todoMapper.insert(todo);
 
             todoLogMapper.insert(newTodoLog(userId, todo.getId(), "CREATE", now));
-
-            runAfterCommit(() -> rocketMQTemplate.convertAndSend(
-                    "todo-topic", String.valueOf(todo.getId())));
-            runAfterCommit(() -> updateCachedCountAfterCreate(userId));
-            runAfterCommit(() -> pushRecentOperation(userId, "CREATE:" + todo.getId()));
+            updateCachedTodoCount(userId);
+            pushRecentOperation(userId, "CREATE:" + todo.getId());
+            todoMessageProducer.sendTodoCreated(todo.getId());
             return todo;
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new ResponseStatusException(
                     HttpStatus.SERVICE_UNAVAILABLE, "获取任务锁时线程被中断", exception);
         } finally {
-            if (locked && !unlockRegistered && lock.isHeldByCurrentThread()) {
+            if (locked && lock.isHeldByCurrentThread()) {
                 lock.unlock();
             }
         }
@@ -115,7 +106,7 @@ public class TodoServiceImpl implements TodoService {
 
         todoLogMapper.insert(newTodoLog(
                 userId, todoId, "FINISH", LocalDateTime.now()));
-        runAfterCommit(() -> pushRecentOperation(userId, "FINISH:" + todoId));
+        pushRecentOperation(userId, "FINISH:" + todoId);
     }
 
     @Override
@@ -133,8 +124,8 @@ public class TodoServiceImpl implements TodoService {
 
         todoLogMapper.insert(newTodoLog(
                 userId, todoId, "DELETE", LocalDateTime.now()));
-        runAfterCommit(() -> updateCachedCountAfterDelete(userId));
-        runAfterCommit(() -> pushRecentOperation(userId, "DELETE:" + todoId));
+        updateCachedTodoCount(userId);
+        pushRecentOperation(userId, "DELETE:" + todoId);
     }
 
     private String normalizeTitle(CreateTodoRequest request) {
@@ -160,27 +151,9 @@ public class TodoServiceImpl implements TodoService {
         return todoLog;
     }
 
-    private void updateCachedCountAfterCreate(Long userId) {
-        String key = countKey(userId);
-        if (Boolean.TRUE.equals(redisTemplate.hasKey(key))) {
-            redisTemplate.opsForValue().increment(key);
-        } else {
-            redisTemplate.opsForValue().set(key,
-                    String.valueOf(todoMapper.countByUserId(userId)));
-        }
-    }
-
-    private void updateCachedCountAfterDelete(Long userId) {
-        String key = countKey(userId);
-        if (Boolean.TRUE.equals(redisTemplate.hasKey(key))) {
-            Long count = redisTemplate.opsForValue().decrement(key);
-            if (count != null && count < 0) {
-                redisTemplate.opsForValue().set(key, "0");
-            }
-        } else {
-            redisTemplate.opsForValue().set(key,
-                    String.valueOf(todoMapper.countByUserId(userId)));
-        }
+    private void updateCachedTodoCount(Long userId) {
+        long count = todoMapper.countByUserId(userId);
+        redisTemplate.opsForValue().set(countKey(userId), String.valueOf(count));
     }
 
     private void pushRecentOperation(Long userId, String operation) {
@@ -191,41 +164,5 @@ public class TodoServiceImpl implements TodoService {
 
     private String countKey(Long userId) {
         return "todo:count:" + userId;
-    }
-
-    private boolean registerUnlockAfterTransaction(RLock lock) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            return false;
-        }
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCompletion(int status) {
-                if (lock.isHeldByCurrentThread()) {
-                    lock.unlock();
-                }
-            }
-        });
-        return true;
-    }
-
-    private void runAfterCommit(Runnable action) {
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    runExternalAction(action);
-                }
-            });
-        } else {
-            runExternalAction(action);
-        }
-    }
-
-    private void runExternalAction(Runnable action) {
-        try {
-            action.run();
-        } catch (RuntimeException exception) {
-            LOGGER.error("事务提交后的 Redis 或 RocketMQ 操作失败", exception);
-        }
     }
 }

@@ -2,7 +2,7 @@
 
 ## 1. 项目介绍
 
-这是一个用于练习 Spring Boot、MySQL、Redis 和 RocketMQ 的简易 Todo 任务管理系统。项目只提供新增、查询、完成和删除四个接口，重点展示常见后端分层和中间件的基础用法。
+这是一个用于练习 Spring Boot、MySQL、Redis 和 RocketMQ 的简易 Todo 任务管理系统。项目只提供新增、查询、完成和删除四个接口，重点展示常见后端分层和中间件的基础用法。不包含 Spring Security、登录系统或前端页面。
 
 本地运行需要准备 MySQL、Redis、RocketMQ。
 
@@ -53,7 +53,8 @@ springboot-todo-demo
     │   │   ├── TodoMapper.java
     │   │   └── TodoLogMapper.java
     │   ├── mq
-    │   │   └── TodoMessageConsumer.java
+    │   │   ├── TodoMessageConsumer.java
+    │   │   └── TodoMessageProducer.java
     │   ├── service
     │   │   ├── TodoService.java
     │   │   └── impl
@@ -96,18 +97,8 @@ CREATE TABLE IF NOT EXISTS todo_log (
 
 确保已安装 Docker Desktop。先通过环境变量提供数据库密码，然后在项目根目录启动容器。
 
-PowerShell：
-
-```powershell
-$env:MYSQL_PASSWORD = "<your-password>"
-docker compose up -d
-docker compose ps
-```
-
-Bash：
-
 ```bash
-export MYSQL_PASSWORD="<your-password>"
+$env:MYSQL_PASSWORD = "<your-password>"
 docker compose up -d
 docker compose ps
 ```
@@ -118,20 +109,13 @@ Compose 文件只包含 MySQL 和 Redis：
 - Redis：`localhost:6379`
 
 停止容器：
-
 ```bash
 docker compose down
 ```
 
-如需同时删除练习数据卷：
-
-```bash
-docker compose down -v
-```
-
 ## 6. 启动 RocketMQ 和 Spring Boot
 
-应用配置的 RocketMQ NameServer 地址是 `localhost:9876`。请先用本机 RocketMQ 或 Docker 单独启动 NameServer 和 Broker，并确保 Broker 自动创建或已创建 `todo-topic`。RocketMQ 不放入 `docker-compose.yml`，以满足该文件只包含 MySQL 和 Redis 的要求。
+新增任务时，`TodoServiceImpl` 在写入 `todo` 和 `todo_log` 后调用 `TodoMessageProducer`，由它通过 `RocketMQTemplate` 向 `todo-topic` 发送 todoId。`TodoMessageConsumer` 监听同一个 topic，收到消息后在日志中打印 todoId。
 
 编译并启动项目：
 
@@ -139,7 +123,6 @@ docker compose down -v
 mvn clean package
 mvn spring-boot:run
 ```
-
 
 应用默认监听 `http://localhost:8080`。启动 Maven 或 JAR 时也必须提供 `MYSQL_PASSWORD` 环境变量；数据库、Redis 和 RocketMQ 的地址可在 `src/main/resources/application.yml` 中修改。
 
@@ -150,7 +133,6 @@ mvn spring-boot:run
 ```bash
 curl.exe -i -X POST "http://localhost:8080/todos" -H "Content-Type: application/json" -H "userId: 1" -d "{\"title\":\"学习 Spring Boot\"}"
 ```
-
 成功返回 HTTP 201。相同用户重复提交同名任务返回 HTTP 409。
 
 ### 7.2 查询当前用户任务列表
@@ -166,7 +148,6 @@ curl.exe -i "http://localhost:8080/todos" -H "userId: 1"
 ```bash
 curl.exe -i -X PUT "http://localhost:8080/todos/1/finish" -H "userId: 1"
 ```
-
 成功返回 HTTP 204。
 
 ### 7.4 删除任务
@@ -174,7 +155,6 @@ curl.exe -i -X PUT "http://localhost:8080/todos/1/finish" -H "userId: 1"
 ```bash
 curl.exe -i -X DELETE "http://localhost:8080/todos/1" -H "userId: 1"
 ```
-
 成功返回 HTTP 204。
 
 ### 7.5 验证拦截器
@@ -182,7 +162,6 @@ curl.exe -i -X DELETE "http://localhost:8080/todos/1" -H "userId: 1"
 ```bash
 curl.exe -i "http://localhost:8080/todos"
 ```
-
 没有 `userId` 请求头时返回 HTTP 401。
 
 ### 7.6 查看 Redis 数据

@@ -8,7 +8,7 @@ import org.springframework.stereotype.Component;
 
 @Component
 @RocketMQMessageListener(
-        topic = "todo-topic",
+        topic = TodoMessageProducer.TODO_TOPIC,
         consumerGroup = "todo-consumer-group"
 )
 public class TodoMessageConsumer implements RocketMQListener<String> {
